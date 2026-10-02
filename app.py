@@ -9,6 +9,9 @@ import os
 from io import BytesIO
 
 st.set_page_config(page_title="Manufacturing Performance Analyzer", page_icon="🏭", layout="wide")
+BUILD_ID="V3-DIRECT-2026-10-03"
+st.sidebar.success(f"Build: {BUILD_ID}")
+st.sidebar.caption("Direct device upload • 200 MB configured ceiling")
 
 STANDARD = {
     "Date": ["date","production date","prod date","date time","datetime","timestamp"], "Plant": ["plant","factory","building"],
@@ -308,11 +311,15 @@ with st.sidebar:
     if source=="Demo data": raw=demo()
     else:
         st.markdown("#### Direct File Upload")
-        st.caption("Upload files directly from your device. No link is required.")
+        st.caption("Upload directly from phone/PC. Large-file slot is isolated from supplementary files.")
+        primary_large=st.file_uploader("PRIMARY LARGE FILE - up to 200 MB configured",type=["xlsx","xls","csv"],key="primary_large_v3")
+        if primary_large is not None:
+            st.info(f"Browser handed the app: {primary_large.name} • {primary_large.size/(1024*1024):.1f} MB")
 
 
         upload_slots=[]
-        for slot in range(1,5):
+        if primary_large is not None: upload_slots.append(primary_large)
+        for slot in range(1,4):
             uf=st.file_uploader(f"Source file {slot}",type=["xlsx","xls","csv"],key=f"source_file_{slot}")
             if uf is not None: upload_slots.append(uf)
         files=upload_slots
@@ -406,7 +413,7 @@ if pr is not None:
     st.write("• Investigate repeated machine-item-date shortfalls first. This report alone does not prove downtime, rejection or root cause.")
     report_bytes=formula_report(raw,view,mg)
     st.download_button("Download auditable Excel report",report_bytes,"production_performance_analysis.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    st.caption("v2.4 | Direct Device Upload + Cached Processing + Executive BI")
+    st.caption("v3.0 | Isolated Large-File Direct Upload + Deployment Diagnostics + Executive BI")
     st.stop()
 
 st.subheader("2. Column Mapping"); suggested=auto_map(raw.columns); mapping={}; cols=["— Not mapped —"]+list(raw.columns)
