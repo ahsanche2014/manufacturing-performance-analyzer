@@ -81,8 +81,20 @@ def insight(m):
     rej=m.assign(Reject_Rate=np.where(m.Total_Qty>0,m.Reject_Qty/m.Total_Qty,0)).sort_values("Reject_Rate",ascending=False).iloc[0]
     return [f"Priority machine: {worst['Machine']} - OEE {worst['OEE']:.1%}.",f"Highest downtime: {down['Machine']} - {down['Downtime_Min']:,.0f} min.",f"Highest rejection exposure: {rej['Machine']} - {rej['Reject_Rate']:.1%}.","Next action: validate top downtime and rejection causes at Gemba, assign owner, target date and quantified recovery opportunity."]
 
-st.markdown("<style>.block-container{padding-top:1.3rem;max-width:1450px}div[data-testid='stMetric']{background:#fff;border:1px solid #e7ebf0;padding:16px;border-radius:14px}h1,h2,h3{color:#17365d}</style>",unsafe_allow_html=True)
-st.title("Manufacturing Performance Analyzer"); st.caption("Upload production data → map columns → calculate OEE/losses → prioritize improvement actions")
+st.markdown("""<style>
+#MainMenu,footer{visibility:hidden}.block-container{padding:1.1rem 2rem 3rem;max-width:1500px}
+.stApp{background:linear-gradient(180deg,#f4f7fb 0%,#eef3f8 100%);color:#15253b}
+h1{font-size:2.05rem!important;font-weight:800!important;letter-spacing:-.04em;color:#102a43!important} h2,h3{color:#17365d!important;font-weight:750!important}
+[data-testid="stSidebar"]{background:#0d2742}[data-testid="stSidebar"] *{color:#eef6ff}
+div[data-testid="stMetric"]{background:linear-gradient(145deg,#fff,#f7faff);border:1px solid #dce6f0;padding:17px 18px;border-radius:16px;box-shadow:0 6px 18px rgba(21,53,83,.07)}
+div[data-testid="stMetricLabel"]{font-size:.78rem;font-weight:700;text-transform:uppercase;letter-spacing:.055em;color:#61758a}
+div[data-testid="stMetricValue"]{font-size:1.65rem;font-weight:800;color:#102a43}
+[data-testid="stPlotlyChart"]{background:#fff;border:1px solid #dce6f0;border-radius:18px;padding:8px;box-shadow:0 6px 18px rgba(21,53,83,.055)}
+[data-testid="stDataFrame"]{border:1px solid #dce6f0;border-radius:14px;overflow:hidden}
+div.stAlert{border-radius:14px}.stDownloadButton button{border-radius:12px;font-weight:700}
+@media(max-width:700px){.block-container{padding:.8rem .8rem 2rem}h1{font-size:1.65rem!important}div[data-testid="stMetric"]{padding:12px}}
+</style>""",unsafe_allow_html=True)
+st.markdown("### MANUFACTURING INTELLIGENCE"); st.title("Performance Command Center"); st.caption("Production performance • loss intelligence • recovery focus")
 with st.sidebar:
     st.header("1. Data Source"); source=st.radio("Choose input",["Demo data","Upload Excel / CSV"]); raw=None
     if source=="Demo data": raw=demo()
@@ -157,4 +169,4 @@ def make_report():
     with pd.ExcelWriter(bio,engine="openpyxl") as writer: view.to_excel(writer,index=False,sheet_name="Analyzed_Data"); machine.to_excel(writer,index=False,sheet_name="Machine_Summary"); loss_machine.to_excel(writer,index=False,sheet_name="Loss_Intelligence")
     return bio.getvalue()
 st.download_button("Download analyzed Excel report",data=make_report(),file_name="manufacturing_performance_analysis.xlsx",mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-st.caption("v1.2 | Loss Intelligence Engine + smart mapping | OEE = Availability × Performance × Quality. Validate ideal-cycle and planned-time definitions against each client's production standard before commercial use.")
+st.caption("v1.3 | Performance Command Center + Loss Intelligence | OEE = Availability × Performance × Quality. Validate ideal-cycle and planned-time definitions against each client's production standard before commercial use.")
