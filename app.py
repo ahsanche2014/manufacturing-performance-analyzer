@@ -45,7 +45,16 @@ def demo():
             rows.append([dt,"Plant-A" if j%2==0 else "Plant-B",m,"A" if (d+j)%2==0 else "B",items[(d+j)%4],
                          planned,down,ideal,total,total-reject,reject,round(total*rng.uniform(.11,.18),1),round(total*rng.uniform(.055,.09),1)])
     return pd.DataFrame(rows,columns=["Date","Plant","Machine","Shift","Item","Planned Min","Downtime Min","Ideal Cycle Sec","Total Qty","Good Qty","Reject Qty","Energy kWh","Material kg"])
+@st.cache_data(show_spinner=False, max_entries=8)
+def smart_read_bytes(name, payload):
+    from io import BytesIO
+    upload=BytesIO(payload); upload.name=name
+    return _smart_read_impl(upload)
+
 def smart_read(upload):
+    return smart_read_bytes(upload.name, upload.getvalue())
+
+def _smart_read_impl(upload):
     """Find the most likely tab/header in messy operational exports."""
     if upload.name.lower().endswith(".csv"):
         for enc in ["utf-8-sig","utf-8","latin1"]:
@@ -54,18 +63,28 @@ def smart_read(upload):
             except Exception: pass
         raise ValueError("CSV could not be decoded.")
     upload.seek(0)
-    book=pd.ExcelFile(upload)
     best=None; best_score=-1
     keywords={"machine","item","wip name","capacity","finished","date time","date","section","cavity","sct","output","production qty","actual qty","downtime","reject qty"}
-    for sheet in book.sheet_names[:12]:
-        try:
-            probe=pd.read_excel(book,sheet_name=sheet,header=None,nrows=40)
-            for i,row in probe.iterrows():
-                vals=[norm(v) for v in row.dropna().tolist()]
+    if upload.name.lower().endswith(".xlsx"):
+        from openpyxl import load_workbook
+        wb=load_workbook(upload,read_only=True,data_only=True)
+        for ws in wb.worksheets[:12]:
+            for i,row in enumerate(ws.iter_rows(min_row=1,max_row=40,values_only=True)):
+                vals=[norm(v) for v in row if v is not None]
                 score=sum(3 if v in keywords else 1 if any(k in v for k in keywords) else 0 for v in vals)
                 score += min(len(set(vals)),20)*.05
-                if score>best_score: best=(sheet,i); best_score=score
-        except Exception: pass
+                if score>best_score: best=(ws.title,i); best_score=score
+        wb.close()
+    else:
+        upload.seek(0); book=pd.ExcelFile(upload)
+        for sheet in book.sheet_names[:12]:
+            try:
+                probe=pd.read_excel(book,sheet_name=sheet,header=None,nrows=40)
+                for i,row in probe.iterrows():
+                    vals=[norm(v) for v in row.dropna().tolist()]
+                    score=sum(3 if v in keywords else 1 if any(k in v for k in keywords) else 0 for v in vals)
+                    if score>best_score: best=(sheet,i); best_score=score
+            except Exception: pass
     if best is None: raise ValueError("No readable worksheet/header found.")
     upload.seek(0)
     df=pd.read_excel(upload,sheet_name=best[0],header=best[1])
@@ -287,14 +306,25 @@ with st.sidebar:
                     ingest.append({"File":f.name,"Rows":len(x),"Columns":len(x.columns),"Detected fields":", ".join([k for k,v in auto_map(x.columns).items() if v])})
                 except Exception as e: ingest.append({"File":f.name,"Size MB":round(size_mb,1),"Rows":0,"Columns":0,"Status":"Read error","Detected fields":str(e)})
             if frames:
-                # Safe vertical union. Cross-table relational joins are not guessed.
-                raw=pd.concat(frames,ignore_index=True,sort=False)
+                # Memory-aware combine: concatenate only schema-compatible reports.
+                base=set(map(norm,frames[0].columns))
+                compatible=[frames[0]]; held=[]
+                for x in frames[1:]:
+                    overlap=len(base & set(map(norm,x.columns)))/max(1,len(base))
+                    (compatible if overlap>=0.60 else held).append(x)
+                raw=pd.concat(compatible,ignore_index=True,sort=False,copy=False)
+                if held:
+                    st.session_state["held_sources"]=[x["__Source_File"].iloc[0] if "__Source_File" in x and len(x) else "Additional source" for x in held]
                 st.session_state["ingest_manifest"]=pd.DataFrame(ingest)
+                del frames
     st.divider(); st.caption("Uploaded data is processed in the running app session. This MVP does not implement permanent database storage.")
 if raw is None: st.info("Upload production files from the sidebar, or select Demo data."); st.stop()
 if "ingest_manifest" in st.session_state and source!="Demo data":
     with st.expander("Data Hub - uploaded file recognition",expanded=True):
         st.dataframe(st.session_state["ingest_manifest"],use_container_width=True,hide_index=True)
+        if "held_sources" in st.session_state:
+            st.warning("Different-schema files were kept separate instead of being blindly merged: "+", ".join(st.session_state["held_sources"]))
+        st.caption("Large-data engine: parsed uploads are cached across dashboard reruns; XLSX header discovery uses read-only streaming to reduce repeated memory pressure.")
 with st.sidebar:
     st.divider(); st.header("2. Customize Dashboard")
     dashboard_view=st.selectbox("View",["Executive","Operations","Compact"])
@@ -358,7 +388,7 @@ if pr is not None:
     st.write("• Investigate repeated machine-item-date shortfalls first. This report alone does not prove downtime, rejection or root cause.")
     report_bytes=formula_report(raw,view,mg)
     st.download_button("Download auditable Excel report",report_bytes,"production_performance_analysis.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    st.caption("v2.1 | Large-file upload slots + Executive BI + Graphical Excel Dashboard")
+    st.caption("v2.2 | Cached Large-Data Engine + Read-only XLSX Scan + Executive BI")
     st.stop()
 
 st.subheader("2. Column Mapping"); suggested=auto_map(raw.columns); mapping={}; cols=["— Not mapped —"]+list(raw.columns)
