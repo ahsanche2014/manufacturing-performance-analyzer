@@ -10,7 +10,11 @@ st.set_page_config(page_title="Manufacturing Performance Analyzer", page_icon="�
 STANDARD = {
     "Date": ["date","production date","prod date"], "Plant": ["plant","factory","building"],
     "Machine": ["machine","machine no","machine name","mc"], "Shift": ["shift"],
-    "Item": ["item","item code","product","sku","wip"],
+    "Item": ["item","item code","product","sku","wip","wip name"],
+    "Capacity": ["capacity","target","standard capacity","expected output"],
+    "Finished": ["finished","finished qty","actual production","production"],
+    "Cavity": ["cavity","mold cavity"],
+    "Weight": ["weight","production weight"],
     "Planned Min": ["planned min","available time","planned time","loading time"],
     "Downtime Min": ["downtime min","stop time","downtime","breakdown min"],
     "Downtime Reason": ["downtime reason","stop reason","loss reason","breakdown reason","reason"],
@@ -41,6 +45,40 @@ def demo():
             rows.append([dt,"Plant-A" if j%2==0 else "Plant-B",m,"A" if (d+j)%2==0 else "B",items[(d+j)%4],
                          planned,down,ideal,total,total-reject,reject,round(total*rng.uniform(.11,.18),1),round(total*rng.uniform(.055,.09),1)])
     return pd.DataFrame(rows,columns=["Date","Plant","Machine","Shift","Item","Planned Min","Downtime Min","Ideal Cycle Sec","Total Qty","Good Qty","Reject Qty","Energy kWh","Material kg"])
+def smart_read(upload):
+    """Read ordinary CSV/Excel plus exported reports with title/meta rows above the real header."""
+    if upload.name.lower().endswith(".csv"):
+        return pd.read_csv(upload)
+    probe=pd.read_excel(upload,header=None,nrows=30)
+    keys={"machine","item","wip name","capacity","finished","date time","section","cavity","sct"}
+    best_i,best_score=0,-1
+    for i,row in probe.iterrows():
+        vals={norm(v) for v in row.dropna().tolist()}
+        score=len(vals & keys)
+        if score>best_score: best_i,best_score=i,score
+    return pd.read_excel(upload,header=best_i)
+
+def production_report_mode(raw):
+    n={norm(x):x for x in raw.columns}
+    need=["machine","capacity","finished"]
+    if not all(x in n for x in need): return None
+    d=pd.DataFrame()
+    for target,candidates in {
+        "Machine":["machine"],"Item":["wip name","item"],"Date":["date time","date"],
+        "Capacity":["capacity"],"Finished":["finished"],"SCT":["sct"],"Cavity":["cavity"],
+        "Weight":["weight"],"Section":["section"],"Customer":["customer"]
+    }.items():
+        src=next((n[x] for x in candidates if x in n),None)
+        if src is not None: d[target]=raw[src]
+    for x in ["Capacity","Finished","SCT","Cavity","Weight"]:
+        if x in d: d[x]=pd.to_numeric(d[x],errors="coerce")
+    if "Date" in d: d["Date"]=pd.to_datetime(d["Date"],errors="coerce")
+    d=d.dropna(subset=["Machine","Capacity","Finished"])
+    d["Gap"]=d["Capacity"]-d["Finished"]
+    d["Shortfall"]=d["Gap"].clip(lower=0)
+    d["Achievement"]=np.where(d["Capacity"]>0,d["Finished"]/d["Capacity"],np.nan)
+    return d
+
 def canonicalize(df,mapping):
     out=pd.DataFrame()
     for std,source in mapping.items():
@@ -101,10 +139,60 @@ with st.sidebar:
     else:
         f=st.file_uploader("Upload .xlsx, .xls or .csv",type=["xlsx","xls","csv"])
         if f:
-            try: raw=pd.read_csv(f) if f.name.lower().endswith(".csv") else pd.read_excel(f)
+            try: raw=smart_read(f)
             except Exception as e: st.error(f"Could not read file: {e}")
     st.divider(); st.caption("Uploaded data is processed in the running app session. This MVP does not implement permanent database storage.")
 if raw is None: st.info("Upload a production file from the sidebar, or select Demo data."); st.stop()
+pr=production_report_mode(raw)
+if pr is not None:
+    st.success("Smart Data Understanding: Production output report recognized automatically.")
+    st.caption("This dataset supports capacity-vs-finished performance analysis. OEE is not fabricated when planned time, downtime or rejection data are absent.")
+    machines=sorted(pr["Machine"].dropna().astype(str).unique())
+    items=sorted(pr["Item"].dropna().astype(str).unique()) if "Item" in pr else []
+    fc1,fc2=st.columns(2)
+    with fc1: sm=st.multiselect("Machine",machines,default=machines)
+    with fc2: si=st.multiselect("Item",items,default=items) if items else []
+    view=pr[pr["Machine"].astype(str).isin(sm)]
+    if items and si: view=view[view["Item"].astype(str).isin(si)]
+    cap=view["Capacity"].sum(); fin=view["Finished"].sum(); short=view["Shortfall"].sum()
+    ach=fin/cap if cap else np.nan
+    k1,k2,k3,k4,k5=st.columns(5)
+    k1.metric("Finished",f"{fin:,.2f}"); k2.metric("Capacity",f"{cap:,.2f}")
+    k3.metric("Achievement",f"{ach:.1%}" if pd.notna(ach) else "N/A")
+    k4.metric("Shortfall",f"{short:,.2f}"); k5.metric("Active Machines",f"{view['Machine'].nunique():,}")
+    mg=view.groupby("Machine",dropna=False).agg(Capacity=("Capacity","sum"),Finished=("Finished","sum"),Shortfall=("Shortfall","sum")).reset_index()
+    mg["Achievement"]=np.where(mg["Capacity"]>0,mg["Finished"]/mg["Capacity"],np.nan)
+    st.markdown("### Performance Intelligence")
+    a,b=st.columns([1.15,1])
+    with a:
+        fig=px.bar(mg.sort_values("Achievement"),x="Machine",y="Achievement",title="Machine Achievement",text_auto=".1%")
+        fig.update_yaxes(tickformat=".0%"); fig.update_layout(template="plotly_white",height=390)
+        st.plotly_chart(fig,use_container_width=True)
+    with b:
+        fig=px.bar(mg.sort_values("Shortfall",ascending=False).head(15),x="Machine",y="Shortfall",title="Top Capacity Shortfall",text_auto=".2f")
+        fig.update_layout(template="plotly_white",height=390)
+        st.plotly_chart(fig,use_container_width=True)
+    if "Date" in view and view["Date"].notna().any():
+        trend=view.groupby("Date").agg(Capacity=("Capacity","sum"),Finished=("Finished","sum")).reset_index().sort_values("Date")
+        fig=px.line(trend,x="Date",y=["Capacity","Finished"],markers=True,title="Production Trend - Capacity vs Finished")
+        fig.update_layout(template="plotly_white",height=410,legend_title_text="")
+        st.plotly_chart(fig,use_container_width=True)
+    if "Item" in view:
+        ig=view.groupby("Item",dropna=False).agg(Capacity=("Capacity","sum"),Finished=("Finished","sum"),Shortfall=("Shortfall","sum")).reset_index()
+        ig["Achievement"]=np.where(ig["Capacity"]>0,ig["Finished"]/ig["Capacity"],np.nan)
+        st.markdown("### Item Intelligence")
+        st.dataframe(ig.sort_values("Shortfall",ascending=False).head(50).style.format({"Capacity":"{:,.2f}","Finished":"{:,.2f}","Shortfall":"{:,.2f}","Achievement":"{:.1%}"}),use_container_width=True,hide_index=True)
+    worst=mg.sort_values("Shortfall",ascending=False).iloc[0]
+    st.markdown("### Management Focus")
+    st.write(f"• Highest recorded shortfall: {worst['Machine']} - {worst['Shortfall']:,.2f} against the report's Capacity field.")
+    st.write("• Investigate repeated machine-item-date shortfalls first. This report alone does not prove downtime, rejection or root cause.")
+    bio=BytesIO()
+    with pd.ExcelWriter(bio,engine="openpyxl") as writer:
+        view.to_excel(writer,index=False,sheet_name="Analyzed_Data"); mg.to_excel(writer,index=False,sheet_name="Machine_Performance")
+    st.download_button("Download analyzed Excel report",bio.getvalue(),"production_performance_analysis.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    st.caption("v1.4 | Smart Production Report Mode | Adaptive analysis based on available fields")
+    st.stop()
+
 st.subheader("2. Column Mapping"); suggested=auto_map(raw.columns); mapping={}; cols=["— Not mapped —"]+list(raw.columns)
 with st.expander("Review / change mapping",expanded=(source!="Demo data")):
     c1,c2,c3=st.columns(3)
