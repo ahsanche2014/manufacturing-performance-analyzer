@@ -8,9 +8,9 @@ from io import BytesIO
 st.set_page_config(page_title="Manufacturing Performance Analyzer", page_icon="🏭", layout="wide")
 
 STANDARD = {
-    "Date": ["date","production date","prod date"], "Plant": ["plant","factory","building"],
-    "Machine": ["machine","machine no","machine name","mc"], "Shift": ["shift"],
-    "Item": ["item","item code","product","sku","wip","wip name"],
+    "Date": ["date","production date","prod date","date time","datetime","timestamp"], "Plant": ["plant","factory","building"],
+    "Machine": ["machine","machine no","machine name","mc","m/c","equipment","equipment no","press","imm"], "Shift": ["shift"],
+    "Item": ["item","item code","product","sku","wip","wip name","product name","material","material code","component"],
     "Capacity": ["capacity","target","standard capacity","expected output"],
     "Finished": ["finished","finished qty","actual production","production"],
     "Cavity": ["cavity","mold cavity"],
@@ -19,7 +19,7 @@ STANDARD = {
     "Downtime Min": ["downtime min","stop time","downtime","breakdown min"],
     "Downtime Reason": ["downtime reason","stop reason","loss reason","breakdown reason","reason"],
     "Ideal Cycle Sec": ["ideal cycle sec","std cycle","standard cycle","cycle time"],
-    "Total Qty": ["total qty","production qty","actual qty","output"],
+    "Total Qty": ["total qty","production qty","actual qty","output","finished","finished qty","actual production","production"],
     "Good Qty": ["good qty","ok qty","accepted qty"], "Reject Qty": ["reject qty","ng qty","rejection qty","scrap qty"],
     "Energy kWh": ["energy kwh","power kwh","kwh"], "Material kg": ["material kg","material consumption","resin kg"],
 }
@@ -46,17 +46,32 @@ def demo():
                          planned,down,ideal,total,total-reject,reject,round(total*rng.uniform(.11,.18),1),round(total*rng.uniform(.055,.09),1)])
     return pd.DataFrame(rows,columns=["Date","Plant","Machine","Shift","Item","Planned Min","Downtime Min","Ideal Cycle Sec","Total Qty","Good Qty","Reject Qty","Energy kWh","Material kg"])
 def smart_read(upload):
-    """Read ordinary CSV/Excel plus exported reports with title/meta rows above the real header."""
+    """Find the most likely tab/header in messy operational exports."""
     if upload.name.lower().endswith(".csv"):
-        return pd.read_csv(upload)
-    probe=pd.read_excel(upload,header=None,nrows=30)
-    keys={"machine","item","wip name","capacity","finished","date time","section","cavity","sct"}
-    best_i,best_score=0,-1
-    for i,row in probe.iterrows():
-        vals={norm(v) for v in row.dropna().tolist()}
-        score=len(vals & keys)
-        if score>best_score: best_i,best_score=i,score
-    return pd.read_excel(upload,header=best_i)
+        for enc in ["utf-8-sig","utf-8","latin1"]:
+            try:
+                upload.seek(0); return pd.read_csv(upload,encoding=enc)
+            except Exception: pass
+        raise ValueError("CSV could not be decoded.")
+    upload.seek(0)
+    book=pd.ExcelFile(upload)
+    best=None; best_score=-1
+    keywords={"machine","item","wip name","capacity","finished","date time","date","section","cavity","sct","output","production qty","actual qty","downtime","reject qty"}
+    for sheet in book.sheet_names[:12]:
+        try:
+            probe=pd.read_excel(book,sheet_name=sheet,header=None,nrows=40)
+            for i,row in probe.iterrows():
+                vals=[norm(v) for v in row.dropna().tolist()]
+                score=sum(3 if v in keywords else 1 if any(k in v for k in keywords) else 0 for v in vals)
+                score += min(len(set(vals)),20)*.05
+                if score>best_score: best=(sheet,i); best_score=score
+        except Exception: pass
+    if best is None: raise ValueError("No readable worksheet/header found.")
+    upload.seek(0)
+    df=pd.read_excel(upload,sheet_name=best[0],header=best[1])
+    df=df.dropna(axis=1,how="all").dropna(axis=0,how="all")
+    df.columns=[str(x).strip() for x in df.columns]
+    return df
 
 def production_report_mode(raw):
     n={norm(x):x for x in raw.columns}
@@ -118,6 +133,74 @@ def insight(m):
     worst=m.sort_values("OEE").iloc[0]; down=m.sort_values("Downtime_Min",ascending=False).iloc[0]
     rej=m.assign(Reject_Rate=np.where(m.Total_Qty>0,m.Reject_Qty/m.Total_Qty,0)).sort_values("Reject_Rate",ascending=False).iloc[0]
     return [f"Priority machine: {worst['Machine']} - OEE {worst['OEE']:.1%}.",f"Highest downtime: {down['Machine']} - {down['Downtime_Min']:,.0f} min.",f"Highest rejection exposure: {rej['Machine']} - {rej['Reject_Rate']:.1%}.","Next action: validate top downtime and rejection causes at Gemba, assign owner, target date and quantified recovery opportunity."]
+
+def formula_report(raw, analyzed, machine_summary, mapping_note=None):
+    """Auditable workbook: original source + mapping + formula-driven calculation layer."""
+    bio=BytesIO()
+    src=raw.copy()
+    calc=analyzed.copy()
+    with pd.ExcelWriter(bio,engine="openpyxl") as writer:
+        pd.DataFrame({
+            "Workbook Guide":["Purpose","Traceability","Refresh rule","Important limitation"],
+            "Details":[
+                "Auditable manufacturing analysis workbook generated by the app.",
+                "01_SOURCE_DATA preserves the uploaded table; 02_DATA_MAP explains source-to-system meaning; 03_CALC_ENGINE contains Excel formulas.",
+                "Edit values inside 01_SOURCE_DATA only when the same row/column structure is retained. Formula references remain traceable.",
+                "This workbook is not an external live link to the original PC file. Re-upload changed source data to regenerate the full analysis."
+            ]
+        }).to_excel(writer,index=False,sheet_name="00_README")
+        src.to_excel(writer,index=False,sheet_name="01_SOURCE_DATA")
+        maps=[]
+        if mapping_note:
+            for sys,source in mapping_note.items():
+                if source: maps.append([source,sys,"Mapped"])
+        else:
+            for col in src.columns: maps.append([col,col,"Source field"])
+        pd.DataFrame(maps,columns=["Source Column","System Meaning","Status"]).to_excel(writer,index=False,sheet_name="02_DATA_MAP")
+        calc.to_excel(writer,index=False,sheet_name="03_CALC_ENGINE")
+        machine_summary.to_excel(writer,index=False,sheet_name="04_MACHINE_ANALYSIS")
+        wb=writer.book
+        ws=wb["03_CALC_ENGINE"]; source_ws=wb["01_SOURCE_DATA"]
+        from openpyxl.utils import get_column_letter
+        # Make source columns explicit and formula-link matching raw fields wherever possible.
+        src_lookup={norm(v):i+1 for i,v in enumerate(src.columns)}
+        calc_lookup={str(v):i+1 for i,v in enumerate(calc.columns)}
+        # In recognized production-report mode, replace copied core values with source links and calculations with formulas.
+        canonical_candidates={"Machine":["machine"],"Item":["wip name","item"],"Date":["date time","date"],"Capacity":["capacity"],"Finished":["finished"]}
+        for target,candidates in canonical_candidates.items():
+            if target not in calc_lookup: continue
+            sc=next((src_lookup[x] for x in candidates if x in src_lookup),None)
+            if sc:
+                tc=calc_lookup[target]
+                for r in range(2,len(calc)+2):
+                    ws.cell(r,tc,f"='01_SOURCE_DATA'!{get_column_letter(sc)}{r}")
+        if "Capacity" in calc_lookup and "Finished" in calc_lookup:
+            cap=get_column_letter(calc_lookup["Capacity"]); fin=get_column_letter(calc_lookup["Finished"])
+            if "Gap" in calc_lookup:
+                gc=get_column_letter(calc_lookup["Gap"])
+                for r in range(2,len(calc)+2): ws[f"{gc}{r}"]=f"={cap}{r}-{fin}{r}"
+            if "Shortfall" in calc_lookup:
+                sh=get_column_letter(calc_lookup["Shortfall"])
+                for r in range(2,len(calc)+2): ws[f"{sh}{r}"]=f"=MAX(0,{cap}{r}-{fin}{r})"
+            if "Achievement" in calc_lookup:
+                ac=get_column_letter(calc_lookup["Achievement"])
+                for r in range(2,len(calc)+2):
+                    ws[f"{ac}{r}"]=f'=IFERROR({fin}{r}/{cap}{r},0)'
+                    ws[f"{ac}{r}"].number_format="0.0%"
+        checks=pd.DataFrame({
+            "Check":["Source rows","Calculation rows","Row reconciliation"],
+            "Result":[len(src),len(calc),"PASS" if len(calc)<=len(src) else "REVIEW"]
+        })
+        checks.to_excel(writer,index=False,sheet_name="08_CHECKS")
+        for sh in wb.worksheets:
+            sh.freeze_panes="A2"; sh.auto_filter.ref=sh.dimensions
+            sh.sheet_view.showGridLines=False
+            for cell in sh[1]:
+                cell.font=cell.font.copy(bold=True)
+            for col in sh.columns:
+                letter=get_column_letter(col[0].column)
+                sh.column_dimensions[letter].width=min(max(12,max(len(str(x.value or "")) for x in col[:200])+2),32)
+    return bio.getvalue()
 
 st.markdown("""<style>
 #MainMenu,footer{visibility:hidden}.block-container{padding:1.1rem 2rem 3rem;max-width:1500px}
@@ -186,11 +269,9 @@ if pr is not None:
     st.markdown("### Management Focus")
     st.write(f"• Highest recorded shortfall: {worst['Machine']} - {worst['Shortfall']:,.2f} against the report's Capacity field.")
     st.write("• Investigate repeated machine-item-date shortfalls first. This report alone does not prove downtime, rejection or root cause.")
-    bio=BytesIO()
-    with pd.ExcelWriter(bio,engine="openpyxl") as writer:
-        view.to_excel(writer,index=False,sheet_name="Analyzed_Data"); mg.to_excel(writer,index=False,sheet_name="Machine_Performance")
-    st.download_button("Download analyzed Excel report",bio.getvalue(),"production_performance_analysis.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    st.caption("v1.4 | Smart Production Report Mode | Adaptive analysis based on available fields")
+    report_bytes=formula_report(raw,view,mg)
+    st.download_button("Download auditable Excel report",report_bytes,"production_performance_analysis.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    st.caption("v1.5 | Adaptive Data Understanding + Auditable Formula Workbook")
     st.stop()
 
 st.subheader("2. Column Mapping"); suggested=auto_map(raw.columns); mapping={}; cols=["— Not mapped —"]+list(raw.columns)
