@@ -220,14 +220,14 @@ with st.sidebar:
     st.header("1. Data Source"); source=st.radio("Choose input",["Demo data","Upload Excel / CSV"]); raw=None
     if source=="Demo data": raw=demo()
     else:
-        files=st.file_uploader("Upload one or more Excel / CSV files",type=["xlsx","xls","csv"],accept_multiple_files=True)
+        files=st.file_uploader("Upload one or more Excel / CSV files (large files supported)",type=["xlsx","xls","csv"],accept_multiple_files=True)
         if files:
             frames=[]; ingest=[]
             for f in files:
                 try:
                     x=smart_read(f); x["__Source_File"]=f.name; frames.append(x)
                     ingest.append({"File":f.name,"Rows":len(x),"Columns":len(x.columns),"Detected fields":", ".join([k for k,v in auto_map(x.columns).items() if v])})
-                except Exception as e: ingest.append({"File":f.name,"Rows":0,"Columns":0,"Detected fields":f"Read error: {e}"})
+                except Exception as e: ingest.append({"File":f.name,"Size MB":round(size_mb,1),"Rows":0,"Columns":0,"Status":"Read error","Detected fields":str(e)})
             if frames:
                 # Safe vertical union. Cross-table relational joins are not guessed.
                 raw=pd.concat(frames,ignore_index=True,sort=False)
