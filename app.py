@@ -20,7 +20,11 @@ STANDARD = {
 }
 REQUIRED = ["Machine","Planned Min","Downtime Min","Ideal Cycle Sec","Total Qty"]
 
-def norm(x): return str(x).strip().lower().replace("_"," ").replace("-"," ")
+def norm(x):
+    import re
+    x=str(x).strip().lower().replace("_"," ").replace("-"," ")
+    x=re.sub(r"[^a-z0-9 ]+"," ",x)
+    return " ".join(x.split())
 def auto_map(cols):
     ncols={norm(c):c for c in cols}; result={}
     for std,aliases in STANDARD.items():
@@ -116,4 +120,4 @@ def make_report():
     with pd.ExcelWriter(bio,engine="openpyxl") as writer: view.to_excel(writer,index=False,sheet_name="Analyzed_Data"); machine.to_excel(writer,index=False,sheet_name="Machine_Summary")
     return bio.getvalue()
 st.download_button("Download analyzed Excel report",data=make_report(),file_name="manufacturing_performance_analysis.xlsx",mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-st.caption("MVP v1.0 | OEE = Availability × Performance × Quality. Validate ideal-cycle and planned-time definitions against each client's production standard before commercial use.")
+st.caption("v1.1 | Smart mapping + data-quality gate | OEE = Availability × Performance × Quality. Validate ideal-cycle and planned-time definitions against each client's production standard before commercial use.")
