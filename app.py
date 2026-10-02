@@ -165,6 +165,13 @@ def formula_report(raw, analyzed, machine_summary, mapping_note=None):
         # Make source columns explicit and formula-link matching raw fields wherever possible.
         src_lookup={norm(v):i+1 for i,v in enumerate(src.columns)}
         calc_lookup={str(v):i+1 for i,v in enumerate(calc.columns)}
+        # Dashboard formulas are rebuilt from actual calculation-column positions.
+        if "05_DASHBOARD" in wb.sheetnames:
+            db=wb["05_DASHBOARD"]
+            if "Capacity" in calc_lookup: db["B6"]=f"=SUM('03_CALC_ENGINE'!{get_column_letter(calc_lookup['Capacity'])}:{get_column_letter(calc_lookup['Capacity'])})"
+            if "Finished" in calc_lookup: db["D6"]=f"=SUM('03_CALC_ENGINE'!{get_column_letter(calc_lookup['Finished'])}:{get_column_letter(calc_lookup['Finished'])})"
+            db["F6"]="=IFERROR(D6/B6,0)"
+            if "Shortfall" in calc_lookup: db["H6"]=f"=SUM('03_CALC_ENGINE'!{get_column_letter(calc_lookup['Shortfall'])}:{get_column_letter(calc_lookup['Shortfall'])})"
         # In recognized production-report mode, replace copied core values with source links and calculations with formulas.
         canonical_candidates={"Machine":["machine"],"Item":["wip name","item"],"Date":["date time","date"],"Capacity":["capacity"],"Finished":["finished"]}
         for target,candidates in canonical_candidates.items():
@@ -187,6 +194,36 @@ def formula_report(raw, analyzed, machine_summary, mapping_note=None):
                 for r in range(2,len(calc)+2):
                     ws[f"{ac}{r}"]=f'=IFERROR({fin}{r}/{cap}{r},0)'
                     ws[f"{ac}{r}"].number_format="0.0%"
+        # Executive graphical dashboard in the downloaded workbook.
+        from openpyxl.chart import BarChart, LineChart, Reference
+        from openpyxl.styles import PatternFill, Font, Alignment
+        dash=wb.create_sheet("05_DASHBOARD")
+        dash.sheet_view.showGridLines=False
+        dash.merge_cells("B2:J3"); dash["B2"]="MANUFACTURING PERFORMANCE COMMAND CENTER"
+        dash["B2"].fill=PatternFill("solid",fgColor="0B2742"); dash["B2"].font=Font(color="FFFFFF",bold=True,size=20)
+        dash["B2"].alignment=Alignment(vertical="center")
+        # KPI cards link to the auditable calculation engine.
+        cards=[("B5","TOTAL CAPACITY",'=SUM(\'03_CALC_ENGINE\'!D:D)'),
+               ("D5","TOTAL FINISHED",'=SUM(\'03_CALC_ENGINE\'!E:E)'),
+               ("F5","ACHIEVEMENT",'=IFERROR(D6/B6,0)'),
+               ("H5","SHORTFALL",'=SUM(\'03_CALC_ENGINE\'!G:G)')]
+        for cell,label,formula in cards:
+            col=dash[cell].column; dash.cell(5,col,label); dash.cell(6,col,formula)
+            dash.cell(5,col).fill=PatternFill("solid",fgColor="173E63"); dash.cell(5,col).font=Font(color="FFFFFF",bold=True)
+            dash.cell(6,col).font=Font(bold=True,size=16,color="102A43")
+        dash["F6"].number_format="0.0%"
+        # Chart directly from machine summary.
+        ms=wb["04_MACHINE_ANALYSIS"]
+        if ms.max_row>1:
+            headers={str(ms.cell(1,j).value):j for j in range(1,ms.max_column+1)}
+            if "Machine" in headers and "Shortfall" in headers:
+                chart=BarChart(); chart.type="bar"; chart.style=10; chart.title="Machine Shortfall Ranking"; chart.height=8; chart.width=15
+                chart.add_data(Reference(ms,min_col=headers["Shortfall"],min_row=1,max_row=min(ms.max_row,16)),titles_from_data=True)
+                chart.set_categories(Reference(ms,min_col=headers["Machine"],min_row=2,max_row=min(ms.max_row,16)))
+                chart.legend=None; dash.add_chart(chart,"B10")
+        for col in range(2,11): dash.column_dimensions[get_column_letter(col)].width=15
+        dash.freeze_panes="B5"
+
         checks=pd.DataFrame({
             "Check":["Source rows","Calculation rows","Row reconciliation"],
             "Result":[len(src),len(calc),"PASS" if len(calc)<=len(src) else "REVIEW"]
@@ -202,9 +239,25 @@ def formula_report(raw, analyzed, machine_summary, mapping_note=None):
                 sh.column_dimensions[letter].width=min(max(12,max(len(str(x.value or "")) for x in col[:200])+2),32)
     return bio.getvalue()
 
+def executive_fig(fig,title=None,height=410):
+    fig.update_layout(
+        template="plotly_white",height=height,
+        title=dict(text=title or (fig.layout.title.text if fig.layout.title else ""),font=dict(size=18),x=.02,xanchor="left"),
+        margin=dict(l=35,r=25,t=65,b=35),paper_bgcolor="white",plot_bgcolor="white",
+        font=dict(family="Arial",size=12,color="#20344a"),
+        hoverlabel=dict(font_size=12),
+        legend=dict(orientation="h",yanchor="bottom",y=1.02,xanchor="right",x=1)
+    )
+    fig.update_xaxes(showgrid=False,linecolor="#dce6f0")
+    fig.update_yaxes(gridcolor="#edf2f7",zeroline=False)
+    return fig
+
 st.markdown("""<style>
 #MainMenu,footer{visibility:hidden}.block-container{padding:1.1rem 2rem 3rem;max-width:1500px}
-.stApp{background:linear-gradient(180deg,#f4f7fb 0%,#eef3f8 100%);color:#15253b}
+.stApp{background:linear-gradient(180deg,#edf3f9 0%,#f7f9fc 42%,#eef3f8 100%);color:#15253b}
+.block-container:before{content:"EXECUTIVE MANUFACTURING ANALYTICS";display:block;background:linear-gradient(110deg,#071d33,#123d63);color:white;padding:18px 24px;border-radius:18px;margin-bottom:18px;font-size:.78rem;font-weight:800;letter-spacing:.14em;box-shadow:0 12px 28px rgba(7,29,51,.18)}
+div[data-testid="stHorizontalBlock"]{gap:1rem}
+[data-testid="stPlotlyChart"]>div{border-radius:16px!important}
 h1{font-size:2.05rem!important;font-weight:800!important;letter-spacing:-.04em;color:#102a43!important} h2,h3{color:#17365d!important;font-weight:750!important}
 [data-testid="stSidebar"]{background:#0d2742}[data-testid="stSidebar"] *{color:#eef6ff}
 div[data-testid="stMetric"]{background:linear-gradient(145deg,#fff,#f7faff);border:1px solid #dce6f0;padding:17px 18px;border-radius:16px;box-shadow:0 6px 18px rgba(21,53,83,.07)}
@@ -220,7 +273,12 @@ with st.sidebar:
     st.header("1. Data Source"); source=st.radio("Choose input",["Demo data","Upload Excel / CSV"]); raw=None
     if source=="Demo data": raw=demo()
     else:
-        files=st.file_uploader("Upload one or more Excel / CSV files (large files supported)",type=["xlsx","xls","csv"],accept_multiple_files=True)
+        st.caption("Large-file mode: use separate slots. Each file is uploaded independently.")
+        upload_slots=[]
+        for slot in range(1,5):
+            uf=st.file_uploader(f"Source file {slot}",type=["xlsx","xls","csv"],key=f"source_file_{slot}")
+            if uf is not None: upload_slots.append(uf)
+        files=upload_slots
         if files:
             frames=[]; ingest=[]
             for f in files:
@@ -278,16 +336,16 @@ if pr is not None:
         if show_machine:
             fig=px.bar(mg.sort_values("Achievement").head(top_n),x="Machine",y="Achievement",title="Machine Achievement",text_auto=".1%")
         if show_machine:
-            fig.update_yaxes(tickformat=".0%"); fig.update_layout(template="plotly_white",height=390,margin=dict(l=20,r=20,t=55,b=20))
+            fig.update_yaxes(tickformat=".0%"); executive_fig(fig,"Machine Achievement",390)
             st.plotly_chart(fig,use_container_width=True)
     with b:
         fig=px.bar(mg.sort_values("Shortfall",ascending=False).head(top_n),x="Machine",y="Shortfall",title="Top Capacity Shortfall",text_auto=".2f")
-        fig.update_layout(template="plotly_white",height=390)
+        executive_fig(fig,"Capacity Shortfall - Priority Machines",390)
         st.plotly_chart(fig,use_container_width=True)
     if show_trend and "Date" in view and view["Date"].notna().any():
         trend=view.groupby("Date").agg(Capacity=("Capacity","sum"),Finished=("Finished","sum")).reset_index().sort_values("Date")
         fig=px.line(trend,x="Date",y=["Capacity","Finished"],markers=True,title="Production Trend - Capacity vs Finished")
-        fig.update_layout(template="plotly_white",height=410,legend_title_text="")
+        executive_fig(fig,"Capacity vs Finished Trend",410); fig.update_layout(legend_title_text="")
         st.plotly_chart(fig,use_container_width=True)
     if show_item and "Item" in view:
         ig=view.groupby("Item",dropna=False).agg(Capacity=("Capacity","sum"),Finished=("Finished","sum"),Shortfall=("Shortfall","sum")).reset_index()
@@ -300,7 +358,7 @@ if pr is not None:
     st.write("• Investigate repeated machine-item-date shortfalls first. This report alone does not prove downtime, rejection or root cause.")
     report_bytes=formula_report(raw,view,mg)
     st.download_button("Download auditable Excel report",report_bytes,"production_performance_analysis.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    st.caption("v2.0 | Multi-file Data Hub + Customizable Executive Cockpit + Auditable Workbook")
+    st.caption("v2.1 | Large-file upload slots + Executive BI + Graphical Excel Dashboard")
     st.stop()
 
 st.subheader("2. Column Mapping"); suggested=auto_map(raw.columns); mapping={}; cols=["— Not mapped —"]+list(raw.columns)
