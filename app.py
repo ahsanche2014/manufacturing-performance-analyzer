@@ -3,6 +3,9 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
+import urllib.request
+import tempfile
+import os
 from io import BytesIO
 
 st.set_page_config(page_title="Manufacturing Performance Analyzer", page_icon="🏭", layout="wide")
@@ -53,6 +56,18 @@ def smart_read_bytes(name, payload):
 
 def smart_read(upload):
     return smart_read_bytes(upload.name, upload.getvalue())
+
+@st.cache_data(show_spinner=False, max_entries=6)
+def fetch_remote_file(url):
+    req=urllib.request.Request(url,headers={"User-Agent":"Mozilla/5.0"})
+    with urllib.request.urlopen(req,timeout=120) as r:
+        data=r.read()
+        cd=r.headers.get("Content-Disposition","")
+        name=url.split("?")[0].rstrip("/").split("/")[-1] or "remote_file.xlsx"
+        if "filename=" in cd: name=cd.split("filename=")[-1].strip().strip('"')
+    if not any(name.lower().endswith(x) for x in [".xlsx",".xls",".csv"]):
+        raise ValueError("Link must point directly to an .xlsx, .xls or .csv file.")
+    return name,data
 
 def _smart_read_impl(upload):
     """Find the most likely tab/header in messy operational exports."""
@@ -292,12 +307,29 @@ with st.sidebar:
     st.header("1. Data Source"); source=st.radio("Choose input",["Demo data","Upload Excel / CSV"]); raw=None
     if source=="Demo data": raw=demo()
     else:
-        st.caption("Large-file mode: use separate slots. Each file is uploaded independently.")
+        st.caption("Large File Gateway: for files that fail in the browser uploader, use a direct-download link.")
+        remote_url=st.text_input("Large file direct-download URL",placeholder="https://.../report.xlsx")
+        remote_payload=None
+        if remote_url and st.button("Load large file from link"):
+            try:
+                with st.spinner("Fetching large file directly to the processing server..."):
+                    rn,rb=fetch_remote_file(remote_url)
+                    remote_payload=(rn,rb)
+                st.success(f"Gateway received {rn} ({len(rb)/(1024*1024):.1f} MB)")
+            except Exception as e: st.error(f"Gateway could not fetch file: {e}")
+        st.caption("Normal upload slots")
+
         upload_slots=[]
         for slot in range(1,5):
             uf=st.file_uploader(f"Source file {slot}",type=["xlsx","xls","csv"],key=f"source_file_{slot}")
             if uf is not None: upload_slots.append(uf)
         files=upload_slots
+        if remote_payload is not None:
+            st.session_state["remote_payload"]=remote_payload
+        if "remote_payload" in st.session_state:
+            from io import BytesIO
+            rn,rb=st.session_state["remote_payload"]
+            rf=BytesIO(rb); rf.name=rn; rf.size=len(rb); files.append(rf)
         if files:
             frames=[]; ingest=[]
             for f in files:
@@ -388,7 +420,7 @@ if pr is not None:
     st.write("• Investigate repeated machine-item-date shortfalls first. This report alone does not prove downtime, rejection or root cause.")
     report_bytes=formula_report(raw,view,mg)
     st.download_button("Download auditable Excel report",report_bytes,"production_performance_analysis.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    st.caption("v2.2 | Cached Large-Data Engine + Read-only XLSX Scan + Executive BI")
+    st.caption("v2.3 | Large File Gateway + Cached Processing + Executive BI")
     st.stop()
 
 st.subheader("2. Column Mapping"); suggested=auto_map(raw.columns); mapping={}; cols=["— Not mapped —"]+list(raw.columns)
