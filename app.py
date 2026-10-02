@@ -81,7 +81,7 @@ def production_report_mode(raw):
     for target,candidates in {
         "Machine":["machine"],"Item":["wip name","item"],"Date":["date time","date"],
         "Capacity":["capacity"],"Finished":["finished"],"SCT":["sct"],"Cavity":["cavity"],
-        "Weight":["weight"],"Section":["section"],"Customer":["customer"]
+        "Weight":["weight"],"Section":["section"],"Customer":["customer"],"Source File":["source file"]
     }.items():
         src=next((n[x] for x in candidates if x in n),None)
         if src is not None: d[target]=raw[src]
@@ -220,12 +220,32 @@ with st.sidebar:
     st.header("1. Data Source"); source=st.radio("Choose input",["Demo data","Upload Excel / CSV"]); raw=None
     if source=="Demo data": raw=demo()
     else:
-        f=st.file_uploader("Upload .xlsx, .xls or .csv",type=["xlsx","xls","csv"])
-        if f:
-            try: raw=smart_read(f)
-            except Exception as e: st.error(f"Could not read file: {e}")
+        files=st.file_uploader("Upload one or more Excel / CSV files",type=["xlsx","xls","csv"],accept_multiple_files=True)
+        if files:
+            frames=[]; ingest=[]
+            for f in files:
+                try:
+                    x=smart_read(f); x["__Source_File"]=f.name; frames.append(x)
+                    ingest.append({"File":f.name,"Rows":len(x),"Columns":len(x.columns),"Detected fields":", ".join([k for k,v in auto_map(x.columns).items() if v])})
+                except Exception as e: ingest.append({"File":f.name,"Rows":0,"Columns":0,"Detected fields":f"Read error: {e}"})
+            if frames:
+                # Safe vertical union. Cross-table relational joins are not guessed.
+                raw=pd.concat(frames,ignore_index=True,sort=False)
+                st.session_state["ingest_manifest"]=pd.DataFrame(ingest)
     st.divider(); st.caption("Uploaded data is processed in the running app session. This MVP does not implement permanent database storage.")
-if raw is None: st.info("Upload a production file from the sidebar, or select Demo data."); st.stop()
+if raw is None: st.info("Upload production files from the sidebar, or select Demo data."); st.stop()
+if "ingest_manifest" in st.session_state and source!="Demo data":
+    with st.expander("Data Hub - uploaded file recognition",expanded=True):
+        st.dataframe(st.session_state["ingest_manifest"],use_container_width=True,hide_index=True)
+with st.sidebar:
+    st.divider(); st.header("2. Customize Dashboard")
+    dashboard_view=st.selectbox("View",["Executive","Operations","Compact"])
+    top_n=st.slider("Top N",5,25,10)
+    show_trend=st.toggle("Trend",True)
+    show_machine=st.toggle("Machine performance",True)
+    show_item=st.toggle("Item intelligence",True)
+    show_table=st.toggle("Detail table",True)
+
 pr=production_report_mode(raw)
 if pr is not None:
     st.success("Smart Data Understanding: Production output report recognized automatically.")
@@ -245,33 +265,42 @@ if pr is not None:
     k4.metric("Shortfall",f"{short:,.2f}"); k5.metric("Active Machines",f"{view['Machine'].nunique():,}")
     mg=view.groupby("Machine",dropna=False).agg(Capacity=("Capacity","sum"),Finished=("Finished","sum"),Shortfall=("Shortfall","sum")).reset_index()
     mg["Achievement"]=np.where(mg["Capacity"]>0,mg["Finished"]/mg["Capacity"],np.nan)
+    st.markdown("### Executive Performance Cockpit")
+    if dashboard_view=="Executive":
+        st.caption("Management view - performance, shortfall and trend")
+    elif dashboard_view=="Operations":
+        st.caption("Operations view - machine and item drill-down")
+    else:
+        st.caption("Compact view - essential KPIs")
     st.markdown("### Performance Intelligence")
     a,b=st.columns([1.15,1])
     with a:
-        fig=px.bar(mg.sort_values("Achievement"),x="Machine",y="Achievement",title="Machine Achievement",text_auto=".1%")
-        fig.update_yaxes(tickformat=".0%"); fig.update_layout(template="plotly_white",height=390)
-        st.plotly_chart(fig,use_container_width=True)
+        if show_machine:
+            fig=px.bar(mg.sort_values("Achievement").head(top_n),x="Machine",y="Achievement",title="Machine Achievement",text_auto=".1%")
+        if show_machine:
+            fig.update_yaxes(tickformat=".0%"); fig.update_layout(template="plotly_white",height=390,margin=dict(l=20,r=20,t=55,b=20))
+            st.plotly_chart(fig,use_container_width=True)
     with b:
-        fig=px.bar(mg.sort_values("Shortfall",ascending=False).head(15),x="Machine",y="Shortfall",title="Top Capacity Shortfall",text_auto=".2f")
+        fig=px.bar(mg.sort_values("Shortfall",ascending=False).head(top_n),x="Machine",y="Shortfall",title="Top Capacity Shortfall",text_auto=".2f")
         fig.update_layout(template="plotly_white",height=390)
         st.plotly_chart(fig,use_container_width=True)
-    if "Date" in view and view["Date"].notna().any():
+    if show_trend and "Date" in view and view["Date"].notna().any():
         trend=view.groupby("Date").agg(Capacity=("Capacity","sum"),Finished=("Finished","sum")).reset_index().sort_values("Date")
         fig=px.line(trend,x="Date",y=["Capacity","Finished"],markers=True,title="Production Trend - Capacity vs Finished")
         fig.update_layout(template="plotly_white",height=410,legend_title_text="")
         st.plotly_chart(fig,use_container_width=True)
-    if "Item" in view:
+    if show_item and "Item" in view:
         ig=view.groupby("Item",dropna=False).agg(Capacity=("Capacity","sum"),Finished=("Finished","sum"),Shortfall=("Shortfall","sum")).reset_index()
         ig["Achievement"]=np.where(ig["Capacity"]>0,ig["Finished"]/ig["Capacity"],np.nan)
         st.markdown("### Item Intelligence")
-        st.dataframe(ig.sort_values("Shortfall",ascending=False).head(50).style.format({"Capacity":"{:,.2f}","Finished":"{:,.2f}","Shortfall":"{:,.2f}","Achievement":"{:.1%}"}),use_container_width=True,hide_index=True)
+        st.dataframe(ig.sort_values("Shortfall",ascending=False).head(max(top_n,10)).style.format({"Capacity":"{:,.2f}","Finished":"{:,.2f}","Shortfall":"{:,.2f}","Achievement":"{:.1%}"}),use_container_width=True,hide_index=True)
     worst=mg.sort_values("Shortfall",ascending=False).iloc[0]
     st.markdown("### Management Focus")
     st.write(f"• Highest recorded shortfall: {worst['Machine']} - {worst['Shortfall']:,.2f} against the report's Capacity field.")
     st.write("• Investigate repeated machine-item-date shortfalls first. This report alone does not prove downtime, rejection or root cause.")
     report_bytes=formula_report(raw,view,mg)
     st.download_button("Download auditable Excel report",report_bytes,"production_performance_analysis.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    st.caption("v1.5 | Adaptive Data Understanding + Auditable Formula Workbook")
+    st.caption("v2.0 | Multi-file Data Hub + Customizable Executive Cockpit + Auditable Workbook")
     st.stop()
 
 st.subheader("2. Column Mapping"); suggested=auto_map(raw.columns); mapping={}; cols=["— Not mapped —"]+list(raw.columns)
